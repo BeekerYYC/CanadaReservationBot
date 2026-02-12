@@ -1,0 +1,35 @@
+name: Daily Status Email
+
+on:
+  schedule:
+    # Run once a day at 14:00 UTC (7 AM MST / 8 AM MDT)
+    - cron: "0 14 * * *"
+  workflow_dispatch:
+    # Manual trigger for testing
+
+permissions:
+  actions: read # Required to read workflow run history
+
+jobs:
+  send-status:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Send daily status email
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EMAIL_TO_ADDRESS: ${{ secrets.EMAIL_TO_ADDRESS }}
+          EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_SMTP_SERVER: smtp.gmail.com
+          EMAIL_SMTP_PORT: "465"
+          EMAIL_FROM_ADDRESS: ${{ secrets.EMAIL_USERNAME }}
+        run: python send_status.py
