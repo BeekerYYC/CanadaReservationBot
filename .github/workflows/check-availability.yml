@@ -34,7 +34,7 @@ jobs:
           EMAIL_SMTP_SERVER: smtp.gmail.com
           EMAIL_SMTP_PORT: "465"
           EMAIL_FROM_ADDRESS: ${{ secrets.EMAIL_USERNAME }}
-          EMAIL_SUBJECT_LINE: "Lake O'Hara Backcountry - Campsite Available!"
+          EMAIL_SUBJECT_LINE: "ALERT - LAKE O'HARA BACKCOUNTRY CAMPSITE AVAILABLE - BOOK NOW"
         run: |
           camply campsites \
             --yaml-config search_config.yaml
