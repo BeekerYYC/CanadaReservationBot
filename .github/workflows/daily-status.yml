@@ -8,7 +8,8 @@ on:
     # Manual trigger for testing
 
 permissions:
-  actions: read # Required to read workflow run history
+  contents: read # Required to checkout the repository
+  actions: read  # Required to read workflow run history
 
 jobs:
   send-status:
