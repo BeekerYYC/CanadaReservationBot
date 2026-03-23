@@ -11,24 +11,41 @@ from email.mime.text import MIMEText
 from datetime import datetime, timezone, timedelta
 
 def get_recent_runs():
-    """Fetch recent workflow runs from the GitHub API."""
+    """Fetch all workflow runs from the last 24 hours via pagination."""
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     token = os.environ.get("GITHUB_TOKEN", "")
     workflow = "check-availability.yml"
 
-    url = f"https://api.github.com/repos/{repo}/actions/workflows/{workflow}/runs?per_page=30"
-    req = urllib.request.Request(url, headers={
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github+json",
-    })
+    yesterday = datetime.now(timezone.utc) - timedelta(hours=24)
+    created_filter = yesterday.strftime("%Y-%m-%dT%H:%M:%SZ")
+    base_url = (
+        f"https://api.github.com/repos/{repo}/actions/workflows/{workflow}/runs"
+        f"?per_page=100&created=%3E{created_filter}"
+    )
 
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
-            return data.get("workflow_runs", [])
-    except Exception as e:
-        print(f"Warning: Could not fetch workflow runs: {e}")
-        return []
+    all_runs = []
+    page = 1
+    while True:
+        url = f"{base_url}&page={page}"
+        req = urllib.request.Request(url, headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+        })
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read())
+                runs = data.get("workflow_runs", [])
+                if not runs:
+                    break
+                all_runs.extend(runs)
+                if len(all_runs) >= data.get("total_count", 0):
+                    break
+                page += 1
+        except Exception as e:
+            print(f"Warning: Could not fetch workflow runs (page {page}): {e}")
+            break
+
+    return all_runs
 
 def build_status_email():
     """Build the daily status email body."""
