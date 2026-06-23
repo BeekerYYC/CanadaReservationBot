@@ -1,4 +1,2 @@
-# Install camply from PR #378 which fixes Parks Canada KeyError bug
-# (https://github.com/juftin/camply/issues/377)
-# Switch back to: camply>=0.35.0  once the fix is released
-camply @ git+https://github.com/justin-outdoorithm/camply.git@fix/going-to-camp-keyerror-377
+# No external dependencies required.
+# The availability checker uses only Python standard library modules.

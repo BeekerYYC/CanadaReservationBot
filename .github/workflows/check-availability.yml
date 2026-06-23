@@ -8,7 +8,7 @@ on:
     # Adds a "Run workflow" button in the GitHub Actions UI for manual testing
 
 permissions:
-  contents: write # Required to commit the offline search state file
+  contents: write # Required to commit the availability state file
 
 jobs:
   check-campsites:
@@ -23,11 +23,13 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
       - name: Check for cancellations
         env:
+          START_DATE: "2026-06-19"
+          END_DATE: "2026-10-03"
+          MIN_NIGHTS: "2"
+          ALLOWED_DAYS: "Friday,Saturday,Sunday"
+          STATE_FILE: "availability_state.json"
           EMAIL_TO_ADDRESS: ${{ secrets.EMAIL_TO_ADDRESS }}
           EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
@@ -35,15 +37,13 @@ jobs:
           EMAIL_SMTP_PORT: "465"
           EMAIL_FROM_ADDRESS: ${{ secrets.EMAIL_USERNAME }}
           EMAIL_SUBJECT_LINE: "ALERT - LAKE O'HARA BACKCOUNTRY CAMPSITE AVAILABLE - BOOK NOW"
-        run: |
-          camply campsites \
-            --yaml-config search_config.yaml
+        run: python check_availability.py
 
       - name: Save search state
         if: always()
         uses: stefanzweifel/git-auto-commit-action@v5
         with:
-          commit_message: "Update camply offline search state"
-          file_pattern: "camply_campsites.json"
+          commit_message: "Update availability search state"
+          file_pattern: "availability_state.json"
           commit_user_name: "github-actions[bot]"
           commit_user_email: "github-actions[bot]@users.noreply.github.com"

@@ -1,25 +1,29 @@
-# Camply search configuration for Lake O'Hara Backcountry Camping
-# Parks Canada - Yoho National Park
+# This file is no longer used.
 #
-# Campground ID reference (Yoho):
-#   -2147483538  Lake O'Hara Backcountry
-#   -2147483536  Lake O'Hara Bus
-#   -2147483540  Kicking Horse Campground
-#   -2147483539  Monarch Campground
-#   -2147483522  Takakkaw Falls Campground
-
-provider: GoingToCamp
-recreation_area: 14                       # Parks Canada (reservation.pc.gc.ca)
-campgrounds: -2147483538                  # Lake O'Hara Backcountry
-start_date: "2026-06-19"                  # Season start (adjust to your travel window)
-end_date: "2026-10-03"                    # Season end (adjust to your travel window)
-nights: 2                                 # Minimum 2 consecutive nights
-days:                                      # Only alert for these check-in days
-  - Friday
-  - Saturday
-  - Sunday
-notifications: email                      # Send email when availability found
-search_once: true                         # Run once and exit (for GitHub Actions cron)
-offline_search: true                      # Track previous results to avoid duplicate alerts
-offline_search_path: camply_campsites.json
-notify_first_try: true                    # Send notification even on first run
+# The bot previously used camply with this config, but camply's GoingToCamp
+# provider doesn't support the "Backcountry Zone" resource category
+# (ID -2147483632) used by Lake O'Hara Backcountry. Every run returned
+# "0 Matching Campgrounds Found" because the campground was silently
+# filtered out.
+#
+# The bot now uses check_availability.py which queries the Parks Canada
+# GoingToCamp API directly. Configuration is in the GitHub Actions workflow
+# file: .github/workflows/check-availability.yml
+#
+# Kept for reference:
+#
+# provider: GoingToCamp
+# recreation_area: 14                       # Parks Canada (reservation.pc.gc.ca)
+# campgrounds: -2147483538                  # Lake O'Hara Backcountry
+# start_date: "2026-06-19"
+# end_date: "2026-10-03"
+# nights: 2
+# days:
+#   - Friday
+#   - Saturday
+#   - Sunday
+# notifications: email
+# search_once: true
+# offline_search: true
+# offline_search_path: camply_campsites.json
+# notify_first_try: true
