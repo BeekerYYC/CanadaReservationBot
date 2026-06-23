@@ -14,7 +14,7 @@ campgrounds: -2147483538                  # Lake O'Hara Backcountry
 start_date: "2026-06-19"                  # Season start (adjust to your travel window)
 end_date: "2026-10-03"                    # Season end (adjust to your travel window)
 nights: 2                                 # Minimum 2 consecutive nights
-day:                                       # Only alert for these check-in days
+days:                                      # Only alert for these check-in days
   - Friday
   - Saturday
   - Sunday
