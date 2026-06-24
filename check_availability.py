@@ -46,8 +46,8 @@ STATE_FILE = os.environ.get("STATE_FILE", "availability_state.json")
 AVAIL_AVAILABLE = 0
 
 
-def api_get(path, params=None, retries=3):
-    """GET request to the Parks Canada API with retries."""
+def api_get(path, params=None, retries=5):
+    """GET request to the Parks Canada API with retries and exponential backoff."""
     url = f"{BASE_URL}{path}"
     if params:
         qs = "&".join(f"{k}={v}" for k, v in params.items())
@@ -59,16 +59,16 @@ def api_get(path, params=None, retries=3):
             with urllib.request.urlopen(req, timeout=30) as resp:
                 return json.loads(resp.read())
         except urllib.error.HTTPError as e:
-            if e.code == 403 and attempt < retries - 1:
-                wait = 2 ** (attempt + 1)
-                print(f"  403 from API, retrying in {wait}s... (attempt {attempt+1})")
+            if e.code in (403, 429, 500, 502, 503) and attempt < retries - 1:
+                wait = min(2 ** (attempt + 1), 30)
+                print(f"  HTTP {e.code} from API, retrying in {wait}s... (attempt {attempt+1}/{retries})")
                 time.sleep(wait)
                 continue
             raise
         except (urllib.error.URLError, TimeoutError) as e:
             if attempt < retries - 1:
-                wait = 2 ** (attempt + 1)
-                print(f"  Network error ({e}), retrying in {wait}s...")
+                wait = min(2 ** (attempt + 1), 30)
+                print(f"  Network error ({e}), retrying in {wait}s... (attempt {attempt+1}/{retries})")
                 time.sleep(wait)
                 continue
             raise
@@ -290,7 +290,13 @@ def main():
     print(f"  Found {len(resource_names)} resources")
 
     print("Fetching availability...")
-    availability = get_availability(START_DATE, END_DATE)
+    try:
+        availability = get_availability(START_DATE, END_DATE)
+    except Exception as e:
+        print(f"\nParks Canada API unavailable ({e}).")
+        print("This is usually a temporary issue (Azure WAF blocking).")
+        print("Will try again next run.")
+        return
     print(f"  Got availability for {len(availability)} resources")
 
     print("Searching for matching windows...")
