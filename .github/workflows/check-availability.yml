@@ -28,7 +28,7 @@ jobs:
           START_DATE: "2026-06-19"
           END_DATE: "2026-10-03"
           MIN_NIGHTS: "2"
-          ALLOWED_DAYS: "Friday,Saturday,Sunday"
+          ALLOWED_DAYS: "Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday"
           STATE_FILE: "availability_state.json"
           EMAIL_TO_ADDRESS: ${{ secrets.EMAIL_TO_ADDRESS }}
           EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
