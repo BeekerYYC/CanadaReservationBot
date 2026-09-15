@@ -1,130 +1,149 @@
 """
 Daily status email for the Lake O'Hara reservation bot.
-Sends a summary so you know the bot is still running.
+
+The old version of this script only checked whether the workflow exited 0.
+That is why it mailed "All checks passed. The bot is running normally." every
+morning for seven months while the checker was querying the wrong resources
+with a condition that could never be true.
+
+This version proves the bot can actually see availability before it claims to
+be healthy:
+
+  1. Canary  -- read a backcountry zone that is known to be open and confirm
+                the detector reports it as open. This exercises the exact code
+                path Lake O'Hara uses.
+  2. Live read -- read Lake O'Hara itself and report how many nights are open
+                out of how many, so "0 openings" is visibly a *measurement*
+                rather than an absence of output.
+  3. Cadence -- how many workflow runs actually fired in the last 24h, since
+                GitHub silently throttles scheduled workflows.
+
+If any of those fail, the subject line says PROBLEM and the script exits
+non-zero so the Actions run goes red.
 """
 
-import os
-import smtplib
 import json
+import os
+import sys
+import urllib.error
 import urllib.request
-from email.mime.text import MIMEText
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
-def get_recent_runs():
-    """Fetch all workflow runs from the last 24 hours via pagination."""
+import check_availability as bot
+
+
+def count_recent_runs():
+    """(count, note) for check-availability runs created in the last 24 hours."""
     repo = os.environ.get("GITHUB_REPOSITORY", "")
     token = os.environ.get("GITHUB_TOKEN", "")
-    workflow = "check-availability.yml"
+    if not repo or not token:
+        return None, "not available (no GITHUB_TOKEN)"
 
-    yesterday = datetime.now(timezone.utc) - timedelta(hours=24)
-    created_filter = yesterday.strftime("%Y-%m-%dT%H:%M:%SZ")
-    base_url = (
-        f"https://api.github.com/repos/{repo}/actions/workflows/{workflow}/runs"
-        f"?per_page=100&created=%3E{created_filter}"
-    )
+    since = (datetime.now(timezone.utc) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    url = (f"https://api.github.com/repos/{repo}/actions/workflows/"
+           f"check-availability.yml/runs?per_page=100&created=%3E{since}")
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read())
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as e:
+        return None, f"could not be read ({e})"
 
-    all_runs = []
-    page = 1
-    while True:
-        url = f"{base_url}&page={page}"
-        req = urllib.request.Request(url, headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/vnd.github+json",
-        })
-        try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read())
-                runs = data.get("workflow_runs", [])
-                if not runs:
-                    break
-                all_runs.extend(runs)
-                if len(all_runs) >= data.get("total_count", 0):
-                    break
-                page += 1
-        except Exception as e:
-            print(f"Warning: Could not fetch workflow runs (page {page}): {e}")
-            break
+    runs = data.get("workflow_runs", [])
+    failed = sum(1 for r in runs if r.get("conclusion") == "failure")
+    note = f"{len(runs)} run(s)"
+    if failed:
+        note += f", {failed} failed"
+    return len(runs), note
 
-    return all_runs
 
 def build_status_email():
-    """Build the daily status email body."""
-    runs = get_recent_runs()
-
+    """Returns (subject, body, healthy)."""
     now = datetime.now(timezone.utc)
-    yesterday = now - timedelta(hours=24)
+    problems = []
+    lines = [
+        "Lake O'Hara Backcountry Bot - Daily Status",
+        "=" * 44,
+        "",
+        f"Report time: {now.strftime('%Y-%m-%d %H:%M UTC')}",
+        f"Watching:    {bot.CAMPGROUND_NAME}",
+        f"Nights:      {bot.FIRST_NIGHT} .. {bot.LAST_NIGHT}",
+        "",
+    ]
 
-    # Filter to last 24 hours
-    recent = []
-    for run in runs:
-        created = datetime.fromisoformat(run["created_at"].replace("Z", "+00:00"))
-        if created >= yesterday:
-            recent.append(run)
+    # 1. Canary
+    canary_ok, canary_message = bot.run_canary()
+    lines.append(f"[{'PASS' if canary_ok else 'FAIL'}] Detector self-check")
+    lines.append(f"       {canary_message}")
+    if not canary_ok:
+        problems.append("the detector cannot see known-available inventory")
+    lines.append("")
 
-    total = len(recent)
-    success = sum(1 for r in recent if r["conclusion"] == "success")
-    failed = sum(1 for r in recent if r["conclusion"] == "failure")
-    other = total - success - failed
+    # 2. Live read of Lake O'Hara
+    try:
+        nights = bot.fetch_nights(
+            bot.RESOURCE_LOCATION_ID, bot.ROOT_MAP_ID, bot.CAMPGROUND_RESOURCE_ID,
+            bot.FIRST_NIGHT, bot.LAST_NIGHT)
+        open_nights = sorted(d for d, s in nights.items() if bot.night_is_open(s))
+        windows = bot.find_windows(nights, bot.MIN_NIGHTS, bot.ALLOWED_DAYS)
+        lines.append("[PASS] Live read of Lake O'Hara")
+        lines.append(f"       {len(open_nights)} of {len(nights)} nights currently open")
+        if open_nights:
+            lines.append(f"       Open nights: {', '.join(open_nights)}")
+            for w in windows:
+                lines.append(f"       -> {w['check_in']} to {w['check_out']} "
+                             f"({w['nights']} night(s))")
+        else:
+            lines.append("       Campground is full. This is a measurement, not a guess.")
+    except bot.ApiError as e:
+        lines.append("[FAIL] Live read of Lake O'Hara")
+        lines.append(f"       {e}")
+        problems.append("the Lake O'Hara read failed")
+    lines.append("")
+
+    # 3. Cadence
+    count, note = count_recent_runs()
+    if count is None:
+        lines.append(f"[ -- ] Run history {note}")
+    else:
+        checks = count * 35  # ~70 minutes of polling at 2-minute intervals
+        healthy_cadence = count >= 12
+        lines.append(f"[{'PASS' if healthy_cadence else 'WARN'}] Run cadence (last 24h)")
+        lines.append(f"       {note}, roughly {checks} availability checks")
+        if not healthy_cadence:
+            lines.append("       Fewer runs than expected -- GitHub may be throttling "
+                         "the schedule.")
+            problems.append("the workflow is not running as often as expected")
+    lines.append("")
+
+    if problems:
+        lines.append("PROBLEM: " + "; ".join(problems) + ".")
+        lines.append("Until this is resolved, silence from this bot means nothing.")
+        subject = "Lake O'Hara Bot - PROBLEM - not detecting availability"
+    else:
+        lines.append("The bot is working. It has been verified end to end against")
+        lines.append("live inventory, not just checked for a zero exit code.")
+        lines.append("You will get a separate email the moment a spot opens.")
+        subject = "Lake O'Hara Bot - OK - watching for cancellations"
 
     repo = os.environ.get("GITHUB_REPOSITORY", "")
-    actions_url = f"https://github.com/{repo}/actions"
+    if repo:
+        lines += ["", f"Actions: https://github.com/{repo}/actions"]
+    lines += ["", "-- ", "Lake O'Hara Reservation Bot"]
 
-    lines = []
-    lines.append("Lake O'Hara Backcountry Bot - Daily Status")
-    lines.append("=" * 44)
-    lines.append("")
-    lines.append(f"Report time: {now.strftime('%Y-%m-%d %H:%M UTC')}")
-    lines.append(f"Last 24 hours: {total} checks ran")
-    lines.append(f"  Successful: {success}")
-    if failed:
-        lines.append(f"  Failed:     {failed}  <-- check the Actions tab")
-    if other:
-        lines.append(f"  Other:      {other}")
-    lines.append("")
+    return subject, "\n".join(lines), not problems
 
-    if total == 0:
-        lines.append("WARNING: No runs detected in the last 24 hours!")
-        lines.append("The bot may have been disabled by GitHub (this happens")
-        lines.append("after 60 days of no repo activity). Visit the Actions tab")
-        lines.append("to re-enable it.")
-    elif failed == 0:
-        lines.append("All checks passed. The bot is running normally.")
-        lines.append("You will receive a separate alert if a campsite opens up.")
-    else:
-        lines.append(f"{failed} check(s) failed in the last 24 hours.")
-        lines.append("This could be a temporary Parks Canada API issue.")
-        lines.append("If failures persist, check the logs in the Actions tab.")
 
-    lines.append("")
-    lines.append(f"View details: {actions_url}")
-    lines.append("")
-    lines.append("-- ")
-    lines.append("Lake O'Hara Reservation Bot")
-
-    return "\n".join(lines)
-
-def send_email(body):
-    """Send the status email via SMTP."""
-    smtp_server = os.environ.get("EMAIL_SMTP_SERVER", "smtp.gmail.com")
-    smtp_port = int(os.environ.get("EMAIL_SMTP_PORT", "465"))
-    username = os.environ["EMAIL_USERNAME"]
-    password = os.environ["EMAIL_PASSWORD"]
-    to_addr = os.environ["EMAIL_TO_ADDRESS"]
-    from_addr = os.environ.get("EMAIL_FROM_ADDRESS", username)
-
-    msg = MIMEText(body)
-    msg["Subject"] = "Lake O'Hara Bot - Daily Status Report"
-    msg["From"] = from_addr
-    msg["To"] = to_addr
-
-    with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
-        server.login(username, password)
-        server.sendmail(from_addr, [to_addr], msg.as_string())
-
-    print("Daily status email sent successfully.")
-
-if __name__ == "__main__":
-    body = build_status_email()
+def main():
+    subject, body, healthy = build_status_email()
     print(body)
     print()
-    send_email(body)
+    bot.send_email(subject, body)
+    return 0 if healthy else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

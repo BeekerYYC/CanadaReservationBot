@@ -2,14 +2,13 @@ name: Daily Status Email
 
 on:
   schedule:
-    # Run once a day at 14:00 UTC (7 AM MST / 8 AM MDT)
+    # 14:00 UTC = 7am MST / 8am MDT
     - cron: "0 14 * * *"
   workflow_dispatch:
-    # Manual trigger for testing
 
 permissions:
-  contents: read # Required to checkout the repository
-  actions: read  # Required to read workflow run history
+  contents: read
+  actions: read
 
 jobs:
   send-status:
@@ -17,15 +16,18 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - name: Send daily status email
         env:
+          FIRST_NIGHT: "2026-09-15"
+          LAST_NIGHT: "2026-10-03"
+          MIN_NIGHTS: "1"
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EMAIL_TO_ADDRESS: ${{ secrets.EMAIL_TO_ADDRESS }}
           EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}

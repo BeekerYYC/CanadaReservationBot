@@ -1,121 +1,165 @@
 # Parks Canada Lake O'Hara Cancellation Alerts
 
-Automatically monitors the Parks Canada reservation website (reservation.pc.gc.ca) for cancellations of **Lake O'Hara backcountry camping** permits in Yoho National Park, and sends you an email when a spot opens up.
+Monitors the Parks Canada reservation system for cancellations at **Lake O'Hara
+Backcountry Camping** (Yoho National Park) and emails you when a night opens up.
 
-Uses [camply](https://github.com/juftin/camply) to check availability every 10 minutes via GitHub Actions. No server needed -- runs free on GitHub.
+Runs on GitHub Actions. No server, no dependencies outside the Python standard
+library.
 
-## How It Works
+## How it works
 
 ```
-GitHub Actions (every 10 min) → camply checks Parks Canada API → email alert if availability found
+GitHub Actions (continuous) → Parks Canada API → email alert when a night frees up
 ```
 
-When someone cancels their Lake O'Hara backcountry reservation, camply detects it and emails you immediately so you can grab the spot.
+Each workflow run polls for 70 minutes at 2-minute intervals, and an hourly cron
+keeps a run alive. Effective check latency is about 2 minutes.
 
-## Setup Guide
+## Important: this repo should stay public
 
-### 1. Fork or clone this repository
+Public repositories get unlimited free GitHub Actions minutes. The continuous
+polling above costs roughly 24 runner-hours per day, which is free on a public
+repo and would exhaust the private-repo free tier (2,000 min/month) in about
+three days.
 
-If you forked it, you're ready. If you cloned it, push it to your own GitHub account.
+If you need the repo private, drop `POLL_DURATION_MINUTES` and accept that
+GitHub throttles scheduled workflows to roughly one run every 1-4 hours, or run
+the checker on your own always-on machine instead:
 
-### 2. Set up a Gmail App Password
-
-You need a Gmail account to send alert emails. If you don't have one, create one at [gmail.com](https://gmail.com).
-
-1. Go to [Google Account Security](https://myaccount.google.com/security)
-2. Under "How you sign in to Google", enable **2-Step Verification** (required for App Passwords)
-3. Go to [App Passwords](https://myaccount.google.com/apppasswords)
-4. Select **"Other (Custom name)"** and enter: `Camply Reservation Bot`
-5. Click **Generate**
-6. Copy the 16-character password that appears (e.g. `abcd efgh ijkl mnop`)
-7. **Save this password** -- you won't be able to see it again
-
-### 3. Add secrets to your GitHub repository
-
-Go to your repository on GitHub, then **Settings > Secrets and variables > Actions**.
-
-Click **"New repository secret"** and add these three secrets:
-
-| Secret Name         | Value                                                                 |
-|---------------------|-----------------------------------------------------------------------|
-| `EMAIL_TO_ADDRESS`  | Email where you want to receive alerts (can be any email address)     |
-| `EMAIL_USERNAME`    | Your Gmail address (e.g. `yourname@gmail.com`)                        |
-| `EMAIL_PASSWORD`    | The 16-character App Password from step 2 (no spaces)                 |
-
-### 4. Customize your date range (optional)
-
-Edit `search_config.yaml` to set your preferred travel dates:
-
-```yaml
-start_date: "2026-06-19"    # Change to your earliest date
-end_date: "2026-10-03"      # Change to your latest date
+```bash
+POLL_DURATION_MINUTES=100000 POLL_INTERVAL_SECONDS=120 \
+  EMAIL_USERNAME=... EMAIL_PASSWORD=... EMAIL_TO_ADDRESS=... \
+  python3 check_availability.py
 ```
 
-The defaults cover the full 2026 Lake O'Hara season (June 19 - October 3).
+There are no credentials in this repository or its git history — the Gmail app
+password lives in GitHub Secrets.
 
-### 5. Test it
+## Reading the Parks Canada API
 
-1. Go to the **Actions** tab in your GitHub repository
-2. Click **"Check Lake O'Hara Availability"** in the left sidebar
-3. Click **"Run workflow"** > **"Run workflow"**
-4. Watch the logs to verify it runs without errors
+This is the part that matters, and the part that was wrong for seven months.
 
-After that, it will automatically check every 10 minutes.
+`/api/availability/map` is the obvious endpoint and it works fine for
+frontcountry campgrounds, returning a clean per-site availability code:
 
-## Customization
+| Code | Meaning |
+|-----:|---------|
+| `0` | Available |
+| `1` | Booked |
+| `2` | Outside the booking window |
+| `3` | Closed for the season |
+| `4` | Site closed |
 
-### Change the check frequency
+**It does not work for backcountry zones.** For every Backcountry Zone resource
+in the Parks Canada system — Lake O'Hara included — it returns `5` on every
+date, regardless of real availability and regardless of query parameters
+(`bookingCategoryId`, equipment category, sub-equipment, party size). A detector
+built on `== 0` can never fire.
 
-Edit `.github/workflows/check-availability.yml` and change the cron schedule:
+`/api/availability/resourceDailyAvailability` exposes the underlying fields:
 
-```yaml
-# Every 5 minutes (more frequent)
-- cron: "*/5 * * * *"
+| Field | Meaning |
+|-------|---------|
+| `availability` | `0` = quota free, `1` = taken, `4` = resource closed |
+| `restrictionReason` | `0` none · `1` outside booking window · `2` closed for season · `3` backcountry-zone rules |
+| `processedAvailability` | what the map endpoint would have returned |
 
-# Every 30 minutes (less frequent)
-- cron: "*/30 * * * *"
+Observed states:
+
+| `processed` | `availability` | `restriction` | Meaning |
+|---:|---:|---:|---|
+| 0 | 0 | 0 | frontcountry, bookable |
+| 1 | 1 | 0 | frontcountry, booked |
+| 2 | 0 | 1 | outside booking window |
+| 3 | 0 | 2 | closed for the season |
+| 4 | 4 | 1 | resource closed |
+| 5 | 0 | 3 | **backcountry zone, quota free — an opening** |
+| 5 | 1 | 3 | backcountry zone, full |
+
+So a night is open when `availability == 0` **and** `restrictionReason` is not
+`1` or `2`. The second half matters: out-of-season dates also carry
+`availability == 0`, and without the guard every one of them looks like a
+cancellation.
+
+## Which resource to watch
+
+Lake O'Hara's resource tree is a trap. The sub-zone map `-2147483028` contains
+sixteen resources with promising names, and **none of them are the campground**:
+
+- `Site 1-10` — alpine climbing bivouacs (Mt. Victoria, Abbot Pass, Mt. Odaray…)
+- `LOH Backcountry - Last-Minute Camping 1-5`
+- `LOH Backcountry - Staff/Guest/Emergency Camping`
+
+The campground is a single quota-based resource on the **root** map:
+
+```
+resourceLocationId  -2147483538   Yoho - Lake O'Hara Backcountry
+mapId               -2147483181   root map
+resourceId          -2147471963   Lake O'Hara Backcountry Sites
 ```
 
-### Monitor a different campground
+## The canary
 
-Edit `search_config.yaml` and change the `campgrounds` value. Here are some Yoho IDs:
+The original bot ran 4,272 times, reported success every time, and emailed a
+healthy status report every morning — while being structurally incapable of
+detecting anything.
 
-| Campground                | ID              |
-|---------------------------|-----------------|
-| Lake O'Hara Backcountry   | `-2147483538`   |
-| Lake O'Hara Bus           | `-2147483536`   |
-| Kicking Horse Campground  | `-2147483540`   |
-| Monarch Campground        | `-2147483539`   |
-| Takakkaw Falls Campground | `-2147483522`   |
+To make that failure mode impossible, every run first checks a **control
+resource**: a backcountry zone that is reliably open, read through the exact
+same code path. If the detector reports it as full, the bot emails
+`SELF-CHECK FAILED` and exits non-zero instead of quietly reporting "no
+availability".
 
-### Stop the bot
+The daily status email does the same, and reports open nights as a measurement
+(`0 of 19 nights currently open`) rather than as silence.
 
-Go to **Actions** > **Check Lake O'Hara Availability** > click the **"..."** menu > **Disable workflow**.
+## Configuration
 
-## Troubleshooting
+Set in `.github/workflows/check-availability.yml`:
 
-### Workflow isn't running automatically
-GitHub disables scheduled workflows after 60 days of no repository activity. Make any small commit to re-enable it, or manually trigger a run from the Actions tab.
+| Variable | Default | Meaning |
+|---|---|---|
+| `FIRST_NIGHT` | `2026-09-15` | first night to watch |
+| `LAST_NIGHT` | `2026-10-03` | last night of the season |
+| `MIN_NIGHTS` | `1` | shortest stay worth alerting on |
+| `ALLOWED_DAYS` | all 7 | permitted check-in days |
+| `ALERT_COOLDOWN_HOURS` | `12` | re-alert interval for a still-open window |
+| `POLL_DURATION_MINUTES` | `70` | in-process polling per run |
+| `POLL_INTERVAL_SECONDS` | `120` | seconds between checks |
 
-### Email not arriving
-- Check your spam/junk folder
-- Verify the three GitHub secrets are set correctly (no extra spaces)
-- Make sure 2-Step Verification is enabled on your Gmail account
-- Try regenerating the App Password
+Secrets (**Settings → Secrets and variables → Actions**):
 
-### "No campsites found" in logs
-This is normal -- it means there are no cancellations right now. The bot will keep checking every 10 minutes.
+| Secret | Value |
+|---|---|
+| `EMAIL_TO_ADDRESS` | where alerts go |
+| `EMAIL_USERNAME` | your Gmail address |
+| `EMAIL_PASSWORD` | Gmail [App Password](https://myaccount.google.com/apppasswords), no spaces |
 
-### 403 or connection errors
-Parks Canada uses bot protection (Azure WAF) that may occasionally block requests. If this persists, try reducing the check frequency to every 30 minutes.
+### Rolling to the 2027 season
 
-## Known Limitations
+Update `FIRST_NIGHT` / `LAST_NIGHT` in both workflows. Until Parks Canada opens
+the season, those dates return `restrictionReason == 1` and the bot correctly
+reports nothing — the daily status email will still confirm the detector is
+alive via the canary.
 
-- **Does not auto-book**: This only sends alerts. You still need to manually book the campsite on reservation.pc.gc.ca once you receive an alert. Cancellations get rebooked very fast, so act quickly.
-- **Parks Canada API changes**: If Parks Canada updates their reservation system, camply may need an update. Check [camply releases](https://github.com/juftin/camply/releases) for updates.
-- **Public repo = free**: GitHub Actions is free for public repos. For private repos, the 10-minute schedule uses ~4,320 min/month which exceeds the 2,000-minute free tier. Either keep it public or reduce frequency.
+## Testing
 
-## Credits
+```bash
+python3 -m unittest test_availability -v          # all tests, hits the live API
+python3 -m unittest test_availability.OfflineTests # no network
+python3 check_availability.py --self-test          # canary + one read, sends nothing
+```
 
-- [camply](https://github.com/juftin/camply) -- the campsite availability checker
-- [Campnab blog post](https://campnab.com/blog/tips-on-getting-backcountry-permit-alerts-at-yoho-national-park) -- inspiration for this project
+The suite pins the API state table, and includes an end-to-end test that points
+the detector at a resource with real availability and asserts it produces an
+alert — the assertion the original version could never have passed.
+
+## Limitations
+
+- **Does not auto-book.** Cancellations get taken fast; the email has a direct
+  booking link, but you still have to click it.
+- **Alerts on quota, not on a specific site.** Lake O'Hara is a single
+  quota-based resource, so the bot can tell you a night is free but not which
+  tent pad.
+- **GitHub throttles schedules.** Handled by polling in-process rather than
+  relying on cron frequency.
