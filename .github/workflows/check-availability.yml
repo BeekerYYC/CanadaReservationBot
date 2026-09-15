@@ -1,49 +1,69 @@
 name: Check Lake O'Hara Availability
 
+# GitHub throttles scheduled workflows hard -- a "*/10" cron on this repo was
+# actually firing about every 4 hours. So instead of relying on the scheduler
+# for frequency, each run polls in-process for 70 minutes and the cron just
+# keeps a run alive. The concurrency group serialises runs, so coverage is
+# continuous with no overlap and no state-file conflicts.
+#
+# This costs ~24 runner-hours/day, which is free on a public repo and would
+# blow through the free tier on a private one.
+
 on:
   schedule:
-    # Run every 10 minutes
-    - cron: "*/10 * * * *"
+    - cron: "0 * * * *"
   workflow_dispatch:
-    # Adds a "Run workflow" button in the GitHub Actions UI for manual testing
+    inputs:
+      poll_duration_minutes:
+        description: "How long this run should poll for"
+        required: false
+        default: "70"
 
 permissions:
-  contents: write # Required to commit the availability state file
+  contents: write
+
+concurrency:
+  group: lake-ohara-check
+  cancel-in-progress: false
 
 jobs:
   check-campsites:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
       - name: Check for cancellations
         env:
-          START_DATE: "2026-06-19"
-          END_DATE: "2026-10-03"
-          MIN_NIGHTS: "2"
+          FIRST_NIGHT: "2026-09-15"
+          LAST_NIGHT: "2026-10-03"
+          MIN_NIGHTS: "1"
           ALLOWED_DAYS: "Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday"
           STATE_FILE: "availability_state.json"
+          ALERT_COOLDOWN_HOURS: "12"
+          POLL_DURATION_MINUTES: ${{ github.event.inputs.poll_duration_minutes || '70' }}
+          POLL_INTERVAL_SECONDS: "120"
           EMAIL_TO_ADDRESS: ${{ secrets.EMAIL_TO_ADDRESS }}
           EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_SMTP_SERVER: smtp.gmail.com
           EMAIL_SMTP_PORT: "465"
           EMAIL_FROM_ADDRESS: ${{ secrets.EMAIL_USERNAME }}
-          EMAIL_SUBJECT_LINE: "ALERT - LAKE O'HARA BACKCOUNTRY CAMPSITE AVAILABLE - BOOK NOW"
+          EMAIL_SUBJECT_LINE: "ALERT - LAKE O'HARA BACKCOUNTRY SPOT AVAILABLE - BOOK NOW"
         run: python check_availability.py
 
-      - name: Save search state
+      - name: Save alert state
         if: always()
-        uses: stefanzweifel/git-auto-commit-action@v5
+        uses: stefanzweifel/git-auto-commit-action@v6
         with:
-          commit_message: "Update availability search state"
+          commit_message: "Update Lake O'Hara alert state"
           file_pattern: "availability_state.json"
           commit_user_name: "github-actions[bot]"
           commit_user_email: "github-actions[bot]@users.noreply.github.com"
