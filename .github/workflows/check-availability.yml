@@ -1,23 +1,31 @@
 name: Check Lake O'Hara Availability
 
-# GitHub throttles scheduled workflows hard -- a "*/10" cron on this repo was
-# actually firing about every 4 hours. So instead of relying on the scheduler
-# for frequency, each run polls in-process for 70 minutes and the cron just
-# keeps a run alive. The concurrency group serialises runs, so coverage is
-# continuous with no overlap and no state-file conflicts.
+# GitHub's scheduler is unreliable and cannot be relied on for frequency. A
+# "*/10" cron on this repo actually fired about every 4 hours, and an hourly
+# cron was observed skipping three consecutive hours entirely. So the cron is
+# treated purely as a way to (re)start a run, never as the polling interval.
+#
+# Each run polls in-process for just under GitHub's 6-hour job limit, and the
+# concurrency group serialises runs: while one is running the next is queued
+# and starts the moment the current one ends. Coverage therefore stays
+# continuous as long as the schedule fires at least once every ~6 hours, which
+# is well inside the worst gap observed.
+#
+# The cron deliberately avoids minute 0. The top of the hour is the most
+# congested slot on GitHub's scheduler and the most likely to be dropped.
 #
 # This costs ~24 runner-hours/day, which is free on a public repo and would
 # blow through the free tier on a private one.
 
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "9,29,49 * * * *"
   workflow_dispatch:
     inputs:
       poll_duration_minutes:
         description: "How long this run should poll for"
         required: false
-        default: "70"
+        default: "350"
 
 permissions:
   contents: write
@@ -29,7 +37,7 @@ concurrency:
 jobs:
   check-campsites:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 358
 
     steps:
       - name: Checkout repository
@@ -48,7 +56,7 @@ jobs:
           ALLOWED_DAYS: "Monday,Tuesday,Wednesday,Thursday,Friday,Saturday,Sunday"
           STATE_FILE: "availability_state.json"
           ALERT_COOLDOWN_HOURS: "12"
-          POLL_DURATION_MINUTES: ${{ github.event.inputs.poll_duration_minutes || '70' }}
+          POLL_DURATION_MINUTES: ${{ github.event.inputs.poll_duration_minutes || '350' }}
           POLL_INTERVAL_SECONDS: "120"
           EMAIL_TO_ADDRESS: ${{ secrets.EMAIL_TO_ADDRESS }}
           EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}

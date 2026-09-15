@@ -12,8 +12,19 @@ library.
 GitHub Actions (continuous) → Parks Canada API → email alert when a night frees up
 ```
 
-Each workflow run polls for 70 minutes at 2-minute intervals, and an hourly cron
-keeps a run alive. Effective check latency is about 2 minutes.
+Each workflow run polls for ~5h50m at 2-minute intervals. Effective check
+latency is about 2 minutes.
+
+**The cron is not the polling interval.** GitHub's scheduler is unreliable: a
+`*/10` cron on this repo actually fired roughly every 4 hours, and an hourly
+cron was observed skipping three consecutive hours outright. So each run polls
+in-process for just under GitHub's 6-hour job limit, and the cron exists only to
+(re)start a run. The concurrency group serialises runs — while one is running
+the next is queued and starts the instant the current one ends — so coverage
+stays continuous as long as the schedule fires once every ~6 hours.
+
+The cron deliberately avoids minute 0; the top of the hour is the most congested
+slot on GitHub's scheduler and the most likely to be dropped.
 
 ## Important: this repo should stay public
 
@@ -124,8 +135,9 @@ Set in `.github/workflows/check-availability.yml`:
 | `MIN_NIGHTS` | `1` | shortest stay worth alerting on |
 | `ALLOWED_DAYS` | all 7 | permitted check-in days |
 | `ALERT_COOLDOWN_HOURS` | `12` | re-alert interval for a still-open window |
-| `POLL_DURATION_MINUTES` | `70` | in-process polling per run |
+| `POLL_DURATION_MINUTES` | `350` | in-process polling per run (job limit is 360) |
 | `POLL_INTERVAL_SECONDS` | `120` | seconds between checks |
+| `MAX_CONSECUTIVE_FAILURES` | `10` | consecutive API failures before aborting the run |
 
 Secrets (**Settings → Secrets and variables → Actions**):
 
