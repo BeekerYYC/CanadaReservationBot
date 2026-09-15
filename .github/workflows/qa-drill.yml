@@ -1,0 +1,59 @@
+name: QA Drill
+
+# On-demand end-to-end verification of the alert path. Unlike the daily status
+# email, this deliberately sends a real (clearly labelled) alert email, because
+# delivery is the one link that cannot be verified any other way.
+#
+# Run it from the Actions tab whenever you want proof the bot would actually
+# reach you, or after changing anything in the detector.
+
+on:
+  workflow_dispatch:
+    inputs:
+      send_email:
+        description: "Send the labelled drill email?"
+        type: boolean
+        required: false
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests
+        env:
+          FIRST_NIGHT: "2026-09-15"
+          LAST_NIGHT: "2026-10-03"
+          MIN_NIGHTS: "1"
+        run: python -m unittest test_availability -v
+
+      - name: End-to-end QA drill
+        env:
+          FIRST_NIGHT: "2026-09-15"
+          LAST_NIGHT: "2026-10-03"
+          MIN_NIGHTS: "1"
+          EMAIL_TO_ADDRESS: ${{ secrets.EMAIL_TO_ADDRESS }}
+          EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
+          EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          EMAIL_SMTP_SERVER: smtp.gmail.com
+          EMAIL_SMTP_PORT: "465"
+          EMAIL_FROM_ADDRESS: ${{ secrets.EMAIL_USERNAME }}
+        run: |
+          if [ "${{ inputs.send_email }}" = "false" ]; then
+            python qa_drill.py --no-email
+          else
+            python qa_drill.py
+          fi

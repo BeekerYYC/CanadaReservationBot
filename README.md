@@ -145,14 +145,35 @@ alive via the canary.
 ## Testing
 
 ```bash
-python3 -m unittest test_availability -v          # all tests, hits the live API
+python3 -m unittest test_availability -v           # all tests, hits the live API
 python3 -m unittest test_availability.OfflineTests # no network
 python3 check_availability.py --self-test          # canary + one read, sends nothing
+python3 qa_drill.py --no-email                     # full drill, no email
+python3 qa_drill.py                                # full drill incl. real test email
 ```
 
-The suite pins the API state table, and includes an end-to-end test that points
-the detector at a resource with real availability and asserts it produces an
-alert — the assertion the original version could never have passed.
+The unit suite pins the API state table, the window logic and the alert
+cooldown.
+
+### QA drill
+
+`qa_drill.py` answers the question the unit tests cannot: *if a cancellation
+appeared right now, would an email with a working booking link actually land in
+the inbox?* Seven checks, all against live data, nothing mocked:
+
+1. **Lake O'Hara read** — payload parses, and the observed state tuples are reported
+2. **Canary** — detector reports a known-open backcountry zone as open
+3. **Windows from real inventory** — open nights become windows and render an alert body
+4. **Single-night cancellation** — hunts live frontcountry inventory for a night
+   that is open with booked nights on *both* sides, then asserts `MIN_NIGHTS=1`
+   catches it and `MIN_NIGHTS=2` does not
+5. **Out-of-season not flagged** — post-season nights all carry
+   `availability == 0`; asserts none are mistaken for openings
+6. **Booking link resolves** — HTTP 200 on the URL an alert would contain
+7. **Alert email delivered** — sends a real, clearly-labelled drill email
+
+Run it from the Actions tab via the **QA Drill** workflow (it runs the unit
+suite first), or locally with `--no-email`.
 
 ## Limitations
 

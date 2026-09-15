@@ -163,7 +163,8 @@ def api_get(path, params, retries=5):
     raise ApiError(f"GET {path} failed: {last_error}")
 
 
-def fetch_nights(resource_location_id, map_id, resource_id, first_night, last_night):
+def fetch_nights(resource_location_id, map_id, resource_id, first_night, last_night,
+                 equipment_category_id=None, sub_equipment_category_id=None):
     """
     Return {date_str: slot_dict} for every night in [first_night, last_night].
 
@@ -180,8 +181,12 @@ def fetch_nights(resource_location_id, map_id, resource_id, first_night, last_ni
         "isReserving": "true",
         "getDailyAvailability": "true",
         "filterData": "[]",
-        "equipmentCategoryId": EQUIPMENT_CATEGORY_ID,
-        "subEquipmentCategoryId": SUB_EQUIPMENT_CATEGORY_ID,
+        "equipmentCategoryId": (equipment_category_id
+                                if equipment_category_id is not None
+                                else EQUIPMENT_CATEGORY_ID),
+        "subEquipmentCategoryId": (sub_equipment_category_id
+                                   if sub_equipment_category_id is not None
+                                   else SUB_EQUIPMENT_CATEGORY_ID),
         "partySize": PARTY_SIZE,
         "bopi498": "",
     })
