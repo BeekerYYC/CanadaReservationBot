@@ -128,6 +128,7 @@ ALERT_COOLDOWN_HOURS = float(os.environ.get("ALERT_COOLDOWN_HOURS", "12"))
 
 POLL_DURATION_MINUTES = float(os.environ.get("POLL_DURATION_MINUTES", "0"))
 POLL_INTERVAL_SECONDS = float(os.environ.get("POLL_INTERVAL_SECONDS", "120"))
+MAX_CONSECUTIVE_FAILURES = int(os.environ.get("MAX_CONSECUTIVE_FAILURES", "10"))
 
 
 class ApiError(RuntimeError):
@@ -530,7 +531,10 @@ def main():
         except ApiError as e:
             failures += 1
             print(f"  API error ({failures}): {e}")
-            if failures >= 5:
+            # Runs now last ~6 hours, so a couple of transient blips must not
+            # end the run. Each check already retries with backoff, so this
+            # threshold means a sustained outage, not a flake.
+            if failures >= MAX_CONSECUTIVE_FAILURES:
                 print("\nToo many consecutive API failures.")
                 if send:
                     send_email("LAKE O'HARA BOT - SELF-CHECK FAILED",
