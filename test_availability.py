@@ -17,7 +17,10 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
+import os
+
 import check_availability as bot
+import send_status
 
 
 def slot(processed, availability, restriction):
@@ -172,6 +175,99 @@ class CanaryStateTests(unittest.TestCase):
         bot.fetch_nights = lambda *a, **kw: {"2026-09-20": slot(5, 0, 3)}
         status, _ = bot.run_canary()
         self.assertEqual(status, bot.CANARY_OK)
+
+
+class CoverageTests(unittest.TestCase):
+    """
+    The status email must measure *coverage*, not run count.
+
+    On 2026-09-16 it mailed "PROBLEM: the workflow is not running as often as
+    expected" while the bot was watching ~100% of the day. The old heuristic
+    wanted 12+ runs, which was right for 70-minute runs and exactly backwards
+    for the 350-minute runs introduced later.
+    """
+
+    def _fake_api(self, runs):
+        """runs: list of (run_id, conclusion, job_start, job_end_or_None)."""
+        def fake(path):
+            if "/jobs" in path:
+                rid = int(path.split("/runs/")[1].split("/")[0])
+                for run_id, _c, s, e in runs:
+                    if run_id == rid:
+                        job = {"started_at": s.strftime("%Y-%m-%dT%H:%M:%SZ")}
+                        job["completed_at"] = (
+                            e.strftime("%Y-%m-%dT%H:%M:%SZ") if e else None)
+                        return {"jobs": [job]}
+                return {"jobs": []}
+            return {"workflow_runs": [
+                {"id": r, "conclusion": c, "status":
+                 "completed" if e else "in_progress",
+                 "updated_at": (e or s).strftime("%Y-%m-%dT%H:%M:%SZ")}
+                for r, c, s, e in runs]}
+        return fake
+
+    def _measure(self, runs, now):
+        import unittest.mock as mock
+        with mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "a/b",
+                                          "GITHUB_TOKEN": "x"}), \
+             mock.patch.object(send_status, "_github_json",
+                               side_effect=self._fake_api(runs)):
+            return send_status.measure_coverage(hours=24, now=now)
+
+    def test_long_runs_are_full_coverage_not_a_problem(self):
+        """Back-to-back 350-minute runs cover the day -- the shape that false-alarmed.
+
+        A 24h window needs five of them (5 x 350 = 1750 min), which is exactly
+        why counting runs is the wrong signal: five is plenty, twelve would be
+        worse.
+        """
+        now = datetime(2026, 9, 16, 18, 0, tzinfo=timezone.utc)
+        runs, cursor = [], now - timedelta(hours=24)
+        for i in range(5):
+            end = cursor + timedelta(minutes=350)
+            runs.append((i, "success", cursor, end if end < now else None))
+            cursor = end + timedelta(seconds=3)
+        cov = self._measure(runs, now)
+        self.assertGreater(cov["covered_minutes"], 23 * 60)
+        self.assertLess(cov["max_gap_minutes"], 5)
+        self.assertTrue(cov["watching_now"])
+        self.assertEqual(cov["runs"], 5)
+
+    def test_many_short_runs_are_poor_coverage(self):
+        """12 one-minute runs would have passed the old count>=12 check."""
+        now = datetime(2026, 9, 16, 18, 0, tzinfo=timezone.utc)
+        runs = []
+        for i in range(12):
+            s = now - timedelta(hours=24) + timedelta(hours=2 * i)
+            runs.append((i, "success", s, s + timedelta(minutes=1)))
+        cov = self._measure(runs, now)
+        self.assertLess(cov["covered_minutes"], 20)
+        self.assertGreater(cov["max_gap_minutes"], 100)
+        self.assertFalse(cov["watching_now"])
+
+    def test_queued_time_is_not_counted_as_coverage(self):
+        """A run queued for hours must not report that wait as watching."""
+        now = datetime(2026, 9, 16, 18, 0, tzinfo=timezone.utc)
+        job_start = now - timedelta(minutes=30)
+        cov = self._measure([(1, None, job_start, None)], now)
+        self.assertAlmostEqual(cov["covered_minutes"], 30, delta=1)
+
+    def test_gap_between_runs_is_reported(self):
+        now = datetime(2026, 9, 16, 18, 0, tzinfo=timezone.utc)
+        a_start = now - timedelta(hours=12)
+        a_end = a_start + timedelta(hours=4)
+        b_start = a_end + timedelta(minutes=45)
+        cov = self._measure([(1, "success", a_start, a_end),
+                             (2, None, b_start, None)], now)
+        self.assertAlmostEqual(cov["max_gap_minutes"], 720, delta=1)
+        self.assertTrue(cov["watching_now"])
+
+    def test_merge_intervals_collapses_overlaps(self):
+        base = datetime(2026, 9, 16, tzinfo=timezone.utc)
+        h = lambda n: base + timedelta(hours=n)
+        merged = send_status.merge_intervals(
+            [(h(0), h(2)), (h(1), h(3)), (h(5), h(6))])
+        self.assertEqual(merged, [[h(0), h(3)], [h(5), h(6)]])
 
 
 class LiveTests(unittest.TestCase):

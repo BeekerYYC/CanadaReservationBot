@@ -163,6 +163,27 @@ availability".
 The daily status email does the same, and reports open nights as a measurement
 (`0 of 19 nights currently open`) rather than as silence.
 
+It also reports **coverage**, not run count:
+
+```
+[PASS] Coverage (last 24h)
+       watching 100% of the day across 5 run(s), roughly 2880 checks
+       largest blind gap: 0 min
+       watching right now: yes
+```
+
+Run count is a misleading signal once runs are six hours long — four runs a day
+is full coverage, while twelve short ones would be mostly gaps. The check
+measures merged job intervals and the largest blind gap, using each run's *job*
+timestamps rather than the run's own, since a run queued behind the concurrency
+group reports `run_started_at` at queue time and would otherwise count hours of
+waiting as coverage.
+
+A coverage gap is a **warning**, not a problem. The subject only says `PROBLEM`
+when the bot genuinely cannot detect a cancellation — a broken detector or a
+failed read. Anything that still leaves it watching is reported without crying
+wolf.
+
 ## Configuration
 
 Set in `.github/workflows/check-availability.yml`:
