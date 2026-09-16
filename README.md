@@ -12,8 +12,22 @@ library.
 GitHub Actions (continuous) → Parks Canada API → email alert when a night frees up
 ```
 
-Each workflow run polls for ~5h50m at 2-minute intervals. Effective check
-latency is about 2 minutes.
+Each workflow run polls for ~5h50m at 30-second intervals. Effective check
+latency is under a minute.
+
+**Why 30 seconds.** On 2026-09-15 the bot caught two real cancellations, both
+single nights. Each was visible on exactly one check and gone by the next one
+two minutes later:
+
+```
+[21:06:58]  0/19 nights open
+[21:08:59]  1/19 nights open   <- appeared, alert sent
+[21:11:00]  0/19 nights open   <- gone
+```
+
+Lake O'Hara cancellations do not linger. Detection speed is the whole game,
+and the alert subject carries the date so it can be triaged from a watch face
+without opening anything.
 
 **The cron is not the polling interval.** GitHub's scheduler is unreliable: a
 `*/10` cron on this repo actually fired roughly every 4 hours, and an hourly
@@ -161,7 +175,7 @@ Set in `.github/workflows/check-availability.yml`:
 | `ALLOWED_DAYS` | all 7 | permitted check-in days |
 | `ALERT_COOLDOWN_HOURS` | `12` | re-alert interval for a still-open window |
 | `POLL_DURATION_MINUTES` | `350` | in-process polling per run (job limit is 360) |
-| `POLL_INTERVAL_SECONDS` | `120` | seconds between checks |
+| `POLL_INTERVAL_SECONDS` | `30` | seconds between checks |
 | `MAX_CONSECUTIVE_FAILURES` | `10` | consecutive API failures before considering the run blind |
 | `API_RETRIES` | `8` | retries per request |
 | `API_BACKOFF_CEILING_SECONDS` | `120` | max jittered backoff between retries |

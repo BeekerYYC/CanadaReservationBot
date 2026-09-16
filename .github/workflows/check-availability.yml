@@ -57,14 +57,13 @@ jobs:
           STATE_FILE: "availability_state.json"
           ALERT_COOLDOWN_HOURS: "12"
           POLL_DURATION_MINUTES: ${{ github.event.inputs.poll_duration_minutes || '350' }}
-          POLL_INTERVAL_SECONDS: "120"
+          POLL_INTERVAL_SECONDS: "30"
           EMAIL_TO_ADDRESS: ${{ secrets.EMAIL_TO_ADDRESS }}
           EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_SMTP_SERVER: smtp.gmail.com
           EMAIL_SMTP_PORT: "465"
           EMAIL_FROM_ADDRESS: ${{ secrets.EMAIL_USERNAME }}
-          EMAIL_SUBJECT_LINE: "ALERT - LAKE O'HARA BACKCOUNTRY SPOT AVAILABLE - BOOK NOW"
         run: python check_availability.py
 
       - name: Save alert state

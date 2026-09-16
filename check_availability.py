@@ -132,7 +132,7 @@ STATE_FILE = os.environ.get("STATE_FILE", "availability_state.json")
 ALERT_COOLDOWN_HOURS = float(os.environ.get("ALERT_COOLDOWN_HOURS", "12"))
 
 POLL_DURATION_MINUTES = float(os.environ.get("POLL_DURATION_MINUTES", "0"))
-POLL_INTERVAL_SECONDS = float(os.environ.get("POLL_INTERVAL_SECONDS", "120"))
+POLL_INTERVAL_SECONDS = float(os.environ.get("POLL_INTERVAL_SECONDS", "30"))
 MAX_CONSECUTIVE_FAILURES = int(os.environ.get("MAX_CONSECUTIVE_FAILURES", "10"))
 API_RETRIES = int(os.environ.get("API_RETRIES", "8"))
 API_BACKOFF_CEILING_SECONDS = float(os.environ.get("API_BACKOFF_CEILING_SECONDS", "120"))
@@ -409,6 +409,22 @@ def booking_url(check_in, check_out, nights):
     )
 
 
+def build_alert_subject(windows):
+    """
+    Put the night in the subject. These alerts get read on a watch face, where
+    the subject may be all that is visible, and the spot can be gone in under
+    two minutes -- so "which night is it" has to be legible at a glance rather
+    than one tap away.
+    """
+    first = datetime.strptime(windows[0]["check_in"], "%Y-%m-%d")
+    when = first.strftime("%a %b %d").replace(" 0", " ")
+    if len(windows) == 1:
+        nights = windows[0]["nights"]
+        plural = "s" if nights != 1 else ""
+        return f"LAKE O'HARA OPEN: {when} ({nights} night{plural}) - BOOK NOW"
+    return f"LAKE O'HARA OPEN: {len(windows)} spots from {when} - BOOK NOW"
+
+
 def build_alert_email(windows):
     lines = [
         "LAKE O'HARA BACKCOUNTRY - A SPOT OPENED UP",
@@ -526,10 +542,7 @@ def check(send=True):
               + ("" if w in fresh else "  [already alerted]"))
 
     if fresh and send:
-        subject = os.environ.get(
-            "EMAIL_SUBJECT_LINE",
-            "ALERT - LAKE O'HARA BACKCOUNTRY SPOT AVAILABLE - BOOK NOW",
-        )
+        subject = os.environ.get("EMAIL_SUBJECT_LINE") or build_alert_subject(fresh)
         if send_email(subject, build_alert_email(fresh)):
             record_alerts(fresh, state, now)
 
