@@ -86,8 +86,9 @@ def check_lake_ohara_read(drill):
 
 def check_canary(drill):
     """The detector reports a known-open backcountry zone as open."""
-    ok, message = bot.run_canary()
-    return drill.record("Canary: detector sees live availability", ok, message)
+    status, message = bot.run_canary()
+    return drill.record("Canary: detector sees live availability",
+                        status == bot.CANARY_OK, message)
 
 
 def check_windows_on_real_inventory(drill):

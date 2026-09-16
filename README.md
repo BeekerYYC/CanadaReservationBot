@@ -109,6 +109,31 @@ mapId               -2147483181   root map
 resourceId          -2147471963   Lake O'Hara Backcountry Sites
 ```
 
+## Transient failures vs. real failures
+
+Parks Canada sits behind an Azure WAF that intermittently returns 403 to cloud
+IP ranges, GitHub runners included. This is normal and usually clears within
+minutes.
+
+The bot distinguishes three states, and the distinction is load-bearing:
+
+| Canary result | Meaning | Response |
+|---|---|---|
+| `ok` | control zone reads as open | keep polling |
+| `broken` | request succeeded, but the detector reports known-open inventory as **full** | abort, email `SELF-CHECK FAILED` |
+| `unreachable` | the request itself failed (403, timeout, DNS) | keep polling, re-verify later |
+
+Only `broken` means the bot would silently miss a cancellation. Treating
+`unreachable` the same way is what took the bot offline for three hours on
+2026-09-16 and sent a false alarm at 03:26 UTC: a single WAF 403 during startup
+aborted a six-hour run.
+
+During a run the canary re-verifies every `CANARY_RECHECK_MINUTES`. If the API
+stays unreachable for `CANARY_STALE_MINUTES` *and* checks are failing, the run
+ends deliberately so the scheduler starts a fresh one — most likely on a
+different IP — and the email says *cannot reach Parks Canada*, not *detector
+broken*.
+
 ## The canary
 
 The original bot ran 4,272 times, reported success every time, and emailed a
@@ -137,7 +162,11 @@ Set in `.github/workflows/check-availability.yml`:
 | `ALERT_COOLDOWN_HOURS` | `12` | re-alert interval for a still-open window |
 | `POLL_DURATION_MINUTES` | `350` | in-process polling per run (job limit is 360) |
 | `POLL_INTERVAL_SECONDS` | `120` | seconds between checks |
-| `MAX_CONSECUTIVE_FAILURES` | `10` | consecutive API failures before aborting the run |
+| `MAX_CONSECUTIVE_FAILURES` | `10` | consecutive API failures before considering the run blind |
+| `API_RETRIES` | `8` | retries per request |
+| `API_BACKOFF_CEILING_SECONDS` | `120` | max jittered backoff between retries |
+| `CANARY_RECHECK_MINUTES` | `30` | how often to re-verify the detector mid-run |
+| `CANARY_STALE_MINUTES` | `60` | unreachable for this long (and failing) ends the run |
 
 Secrets (**Settings → Secrets and variables → Actions**):
 

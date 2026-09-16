@@ -62,6 +62,7 @@ import sys
 import time
 import urllib.error
 import urllib.parse
+import random
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from email.mime.text import MIMEText
@@ -109,6 +110,10 @@ HEADERS = {
     "Accept": "application/json",
 }
 
+CANARY_OK = "ok"
+CANARY_BROKEN = "broken"
+CANARY_UNREACHABLE = "unreachable"
+
 AVAILABILITY_FREE = 0
 RESTRICTION_OUTSIDE_BOOKING_WINDOW = 1
 RESTRICTION_CLOSED_FOR_SEASON = 2
@@ -129,6 +134,12 @@ ALERT_COOLDOWN_HOURS = float(os.environ.get("ALERT_COOLDOWN_HOURS", "12"))
 POLL_DURATION_MINUTES = float(os.environ.get("POLL_DURATION_MINUTES", "0"))
 POLL_INTERVAL_SECONDS = float(os.environ.get("POLL_INTERVAL_SECONDS", "120"))
 MAX_CONSECUTIVE_FAILURES = int(os.environ.get("MAX_CONSECUTIVE_FAILURES", "10"))
+API_RETRIES = int(os.environ.get("API_RETRIES", "8"))
+API_BACKOFF_CEILING_SECONDS = float(os.environ.get("API_BACKOFF_CEILING_SECONDS", "120"))
+# How often to re-verify the detector mid-run, and how long we tolerate being
+# unable to reach the API at all before handing the run back to the scheduler.
+CANARY_RECHECK_MINUTES = float(os.environ.get("CANARY_RECHECK_MINUTES", "30"))
+CANARY_STALE_MINUTES = float(os.environ.get("CANARY_STALE_MINUTES", "60"))
 
 
 class ApiError(RuntimeError):
@@ -138,8 +149,13 @@ class ApiError(RuntimeError):
 # ---------------------------------------------------------------------------
 # API
 # ---------------------------------------------------------------------------
-def api_get(path, params, retries=5):
-    """GET with retries and exponential backoff."""
+def api_get(path, params, retries=API_RETRIES):
+    """GET with retries and jittered exponential backoff.
+
+    Parks Canada sits behind an Azure WAF that intermittently 403s cloud IPs,
+    GitHub runners included. Those blocks last minutes, so the backoff ceiling
+    is generous and jittered to avoid every retry landing in lockstep.
+    """
     url = f"{BASE_URL}{path}?{urllib.parse.urlencode(params)}"
 
     last_error = None
@@ -156,8 +172,9 @@ def api_get(path, params, retries=5):
             last_error = e
             if attempt == retries - 1:
                 break
-        wait = min(2 ** (attempt + 1), 30)
-        print(f"    {last_error}; retrying in {wait}s "
+        wait = min(2 ** (attempt + 1), API_BACKOFF_CEILING_SECONDS)
+        wait += random.uniform(0, wait * 0.25)
+        print(f"    {last_error}; retrying in {wait:.0f}s "
               f"(attempt {attempt + 1}/{retries})")
         time.sleep(wait)
 
@@ -270,7 +287,20 @@ def find_windows(nights, min_nights, allowed_days):
 def run_canary():
     """
     Confirm the detector can still see availability on a backcountry zone that
-    is known to be open. Returns (ok, message).
+    is known to be open.
+
+    Returns (status, message) where status is one of:
+
+      CANARY_OK          the detector sees the control zone as open
+      CANARY_BROKEN      the request succeeded but the detector reports the
+                         control zone as full -- a real logic or API-semantics
+                         break, and the thing this canary exists to catch
+      CANARY_UNREACHABLE the request itself failed (WAF 403, timeout, DNS)
+
+    The distinction matters. BROKEN means the bot would silently miss a
+    cancellation and must stop. UNREACHABLE means we simply could not look
+    just now, which is a transient infrastructure problem and must NOT be
+    reported as a broken detector or used to abandon the run.
     """
     today = datetime.now(timezone.utc).date()
     first = (today + timedelta(days=2)).strftime("%Y-%m-%d")
@@ -282,20 +312,20 @@ def run_canary():
             CANARY["resource_id"], first, last,
         )
     except ApiError as e:
-        return False, f"canary request failed: {e}"
+        return CANARY_UNREACHABLE, f"canary unreachable: {e}"
 
     open_count = sum(1 for slot in nights.values() if night_is_open(slot))
     if open_count == 0:
         sample = "; ".join(
             f"{d} {describe_slot(s)}" for d, s in list(nights.items())[:3]
         )
-        return False, (
+        return CANARY_BROKEN, (
             f"canary '{CANARY['name']}' shows 0 of {len(nights)} nights open. "
             f"The detector cannot see known-available inventory. Sample: {sample}"
         )
 
-    return True, (f"canary '{CANARY['name']}': {open_count}/{len(nights)} "
-                  f"nights open -- detector is live")
+    return CANARY_OK, (f"canary '{CANARY['name']}': {open_count}/{len(nights)} "
+                       f"nights open -- detector is live")
 
 
 # ---------------------------------------------------------------------------
@@ -420,6 +450,26 @@ def build_broken_email(reason):
     ])
 
 
+def build_blocked_email(reason, minutes):
+    return "\n".join([
+        "LAKE O'HARA BOT - CANNOT REACH PARKS CANADA",
+        "=" * 55,
+        "",
+        f"The bot has been unable to reach the reservation API for {minutes:.0f}",
+        "minutes and is handing this run back to the scheduler, which will",
+        "start a fresh run on a different machine.",
+        "",
+        f"Last error: {reason}",
+        "",
+        "This is an infrastructure problem, not a detector bug -- Parks Canada",
+        "sits behind a WAF that intermittently blocks cloud IP ranges. It",
+        "usually clears on its own. No action needed unless it keeps repeating.",
+        "",
+        "-- ",
+        "Lake O'Hara Reservation Bot",
+    ])
+
+
 def send_email(subject, body):
     smtp_server = os.environ.get("EMAIL_SMTP_SERVER", "smtp.gmail.com")
     smtp_port = int(os.environ.get("EMAIL_SMTP_PORT", "465"))
@@ -503,18 +553,26 @@ def main():
     print(f"  Check-in days: {', '.join(ALLOWED_DAYS)}")
     print()
 
+    send = not args.self_test
+
     print("Self-check...")
-    ok, message = run_canary()
+    status, message = run_canary()
     print(f"  {message}")
-    if not ok:
-        if not args.self_test:
+    if status == CANARY_BROKEN:
+        # The only condition that justifies refusing to run: we can read the
+        # API fine, and the detector reports known-open inventory as full.
+        if send:
             send_email("LAKE O'HARA BOT - SELF-CHECK FAILED",
                        build_broken_email(message))
         print("\nAborting: the detector cannot be trusted.")
         return 1
+    if status == CANARY_UNREACHABLE:
+        # Transient. Start polling anyway and re-verify as we go; the loop
+        # below escalates if this turns out to be sustained.
+        print("  Could not verify the detector yet. Starting anyway and will "
+              "re-check during the run.")
     print()
 
-    send = not args.self_test
     deadline = None
     if POLL_DURATION_MINUTES > 0 and not (args.once or args.self_test):
         deadline = time.monotonic() + POLL_DURATION_MINUTES * 60
@@ -523,23 +581,52 @@ def main():
     else:
         print("Checking availability...")
 
+    now = time.monotonic()
+    last_canary_ok = now if status == CANARY_OK else None
+    started = now
+    next_canary = now + CANARY_RECHECK_MINUTES * 60
     failures = 0
+    last_error = "unknown"
+
     while True:
         try:
             check(send=send)
             failures = 0
         except ApiError as e:
             failures += 1
-            print(f"  API error ({failures}): {e}")
-            # Runs now last ~6 hours, so a couple of transient blips must not
-            # end the run. Each check already retries with backoff, so this
-            # threshold means a sustained outage, not a flake.
-            if failures >= MAX_CONSECUTIVE_FAILURES:
-                print("\nToo many consecutive API failures.")
+            last_error = str(e)
+            print(f"  API error ({failures}/{MAX_CONSECUTIVE_FAILURES}): {e}")
+
+        now = time.monotonic()
+
+        # Re-verify the detector periodically. A run lasts ~6 hours; the API
+        # semantics could change under us partway through.
+        if now >= next_canary:
+            next_canary = now + CANARY_RECHECK_MINUTES * 60
+            status, message = run_canary()
+            print(f"  {message}")
+            if status == CANARY_BROKEN:
                 if send:
                     send_email("LAKE O'HARA BOT - SELF-CHECK FAILED",
-                               build_broken_email(str(e)))
+                               build_broken_email(message))
+                print("\nAborting: the detector cannot be trusted.")
                 return 1
+            if status == CANARY_OK:
+                last_canary_ok = now
+                failures = 0
+
+        # Sustained inability to reach the API. End the run so the scheduler
+        # starts a fresh one, most likely on a different IP. This is recovery,
+        # not failure -- but say so accurately rather than crying "broken".
+        blind_since = last_canary_ok if last_canary_ok is not None else started
+        blind_minutes = (now - blind_since) / 60
+        if failures >= MAX_CONSECUTIVE_FAILURES and blind_minutes >= CANARY_STALE_MINUTES:
+            print(f"\nUnable to reach Parks Canada for {blind_minutes:.0f} "
+                  f"minutes. Handing back to the scheduler for a fresh runner.")
+            if send:
+                send_email("LAKE O'HARA BOT - CANNOT REACH PARKS CANADA",
+                           build_blocked_email(last_error, blind_minutes))
+            return 1
 
         if deadline is None:
             break
