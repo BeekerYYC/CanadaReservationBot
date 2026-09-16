@@ -132,12 +132,45 @@ class OfflineTests(unittest.TestCase):
         self.assertIn(f"mapId={bot.ROOT_MAP_ID}", body)
 
 
+class CanaryStateTests(unittest.TestCase):
+    """
+    A transient API failure must never be reported as a broken detector.
+    Conflating the two took the bot offline for three hours and sent a false
+    alarm at 03:26 UTC.
+    """
+
+    def setUp(self):
+        self._real_fetch = bot.fetch_nights
+        self.addCleanup(setattr, bot, "fetch_nights", self._real_fetch)
+
+    def test_request_failure_is_unreachable_not_broken(self):
+        def boom(*a, **kw):
+            raise bot.ApiError("HTTP Error 403: Forbidden")
+        bot.fetch_nights = boom
+        status, message = bot.run_canary()
+        self.assertEqual(status, bot.CANARY_UNREACHABLE)
+        self.assertNotEqual(status, bot.CANARY_BROKEN)
+        self.assertIn("403", message)
+
+    def test_control_zone_reading_full_is_broken(self):
+        bot.fetch_nights = lambda *a, **kw: {"2026-09-20": slot(5, 1, 3)}
+        status, _ = bot.run_canary()
+        self.assertEqual(status, bot.CANARY_BROKEN)
+
+    def test_control_zone_reading_open_is_ok(self):
+        bot.fetch_nights = lambda *a, **kw: {"2026-09-20": slot(5, 0, 3)}
+        status, _ = bot.run_canary()
+        self.assertEqual(status, bot.CANARY_OK)
+
+
 class LiveTests(unittest.TestCase):
     """Hit the real Parks Canada API."""
 
     def test_canary_reports_open_nights(self):
-        ok, message = bot.run_canary()
-        self.assertTrue(ok, message)
+        status, message = bot.run_canary()
+        if status == bot.CANARY_UNREACHABLE:
+            self.skipTest(f"API unreachable, not a detector fault: {message}")
+        self.assertEqual(status, bot.CANARY_OK, message)
 
     def test_detector_finds_windows_on_real_open_inventory(self):
         """

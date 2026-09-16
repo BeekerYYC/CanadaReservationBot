@@ -75,11 +75,17 @@ def build_status_email():
     ]
 
     # 1. Canary
-    canary_ok, canary_message = bot.run_canary()
-    lines.append(f"[{'PASS' if canary_ok else 'FAIL'}] Detector self-check")
+    canary_status, canary_message = bot.run_canary()
+    label = {bot.CANARY_OK: "PASS",
+             bot.CANARY_BROKEN: "FAIL",
+             bot.CANARY_UNREACHABLE: "WARN"}[canary_status]
+    lines.append(f"[{label}] Detector self-check")
     lines.append(f"       {canary_message}")
-    if not canary_ok:
+    if canary_status == bot.CANARY_BROKEN:
         problems.append("the detector cannot see known-available inventory")
+    elif canary_status == bot.CANARY_UNREACHABLE:
+        lines.append("       Could not reach the API just now. This is usually a")
+        lines.append("       transient WAF block, not a detector fault.")
     lines.append("")
 
     # 2. Live read of Lake O'Hara
