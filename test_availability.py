@@ -123,6 +123,17 @@ class OfflineTests(unittest.TestCase):
         self.assertEqual(state, {})
         self.assertEqual(bot.windows_to_alert(windows, state, now), windows)
 
+    def test_alert_subject_names_the_night(self):
+        """Read on a watch face, the subject is often all you get."""
+        one = [{"check_in": "2026-09-20", "check_out": "2026-09-21", "nights": 1}]
+        self.assertEqual(bot.build_alert_subject(one),
+                         "LAKE O'HARA OPEN: Sun Sep 20 (1 night) - BOOK NOW")
+        two = [{"check_in": "2026-09-21", "check_out": "2026-09-23", "nights": 2}]
+        self.assertIn("2 nights", bot.build_alert_subject(two))
+        many = one + [{"check_in": "2026-09-26", "check_out": "2026-09-27",
+                       "nights": 1}]
+        self.assertIn("2 spots", bot.build_alert_subject(many))
+
     def test_alert_email_contains_a_usable_booking_link(self):
         body = bot.build_alert_email(
             [{"check_in": "2026-09-20", "check_out": "2026-09-22", "nights": 2}])
