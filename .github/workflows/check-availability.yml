@@ -20,6 +20,10 @@ name: Check Lake O'Hara Availability
 on:
   schedule:
     - cron: "9,29,49 * * * *"
+  # Lets watchdog.yml restart this without a personal access token.
+  # GITHUB_TOKEN cannot fire workflow_dispatch (GitHub blocks recursion), but
+  # it can call a reusable workflow.
+  workflow_call:
   workflow_dispatch:
     inputs:
       poll_duration_minutes:
@@ -57,14 +61,18 @@ jobs:
           STATE_FILE: "availability_state.json"
           ALERT_COOLDOWN_HOURS: "12"
           POLL_DURATION_MINUTES: ${{ github.event.inputs.poll_duration_minutes || '350' }}
-          POLL_INTERVAL_SECONDS: "30"
+          POLL_INTERVAL_SECONDS: "10"
           EMAIL_TO_ADDRESS: ${{ secrets.EMAIL_TO_ADDRESS }}
           EMAIL_USERNAME: ${{ secrets.EMAIL_USERNAME }}
           EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
           EMAIL_SMTP_SERVER: smtp.gmail.com
           EMAIL_SMTP_PORT: "465"
           EMAIL_FROM_ADDRESS: ${{ secrets.EMAIL_USERNAME }}
-        run: python check_availability.py
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        # -u so the log is readable while the run is still going. Python
+        # buffers stdout in Actions otherwise, and a six-hour run shows nothing
+        # until it ends -- which hid a morning of real alerts.
+        run: python -u check_availability.py
 
       - name: Save alert state
         if: always()

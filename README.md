@@ -12,8 +12,16 @@ library.
 GitHub Actions (continuous) → Parks Canada API → email alert when a night frees up
 ```
 
-Each workflow run polls for ~5h50m at 30-second intervals. Effective check
-latency is under a minute.
+Each workflow run polls for ~5h50m at 10-second intervals, so average
+detection lag is about 5 seconds. Alerts go out as a **push notification
+first** (1-3 s to a phone or watch) and an email second — SMTP plus Gmail
+delivery costs 10-60 s, which is a third of the budget when the window closes
+in under two minutes.
+
+Polling backs off automatically (doubling to a 120 s cap) when the API returns
+errors, and recovers on the next success. Parks Canada's WAF already 403s
+casual traffic; hammering it every 10 s while blocked earns a longer block,
+which costs more coverage than the latency it was meant to save.
 
 **Why 30 seconds.** On 2026-09-15 the bot caught two real cancellations, both
 single nights. Each was visible on exactly one check and gone by the next one
@@ -123,6 +131,47 @@ mapId               -2147483181   root map
 resourceId          -2147471963   Lake O'Hara Backcountry Sites
 ```
 
+## Self-healing
+
+The bot has gone blind twice, both the same shape: a run ended early, nothing
+started another until the next cron fire, and a human had to notice and ask for
+a restart.
+
+`watchdog.yml` removes the human from that loop. Every few minutes it asks one
+question — *is a polling job in progress anywhere?* — and if not, it restarts
+the checker by calling `check-availability.yml` as a reusable workflow. That
+avoids needing a personal access token: `GITHUB_TOKEN` cannot fire
+`workflow_dispatch` (GitHub blocks recursion) but it can call a reusable
+workflow.
+
+Two details that matter:
+
+- The probe scans **both** workflows' runs and matches job names by substring.
+  A restarted checker runs under the *watchdog's* run and is named
+  `restart / check-campsites`. A probe that only looked at the checker's own
+  runs would never see its own restarts and would launch a new six-hour poller
+  every few minutes, forever.
+- If the API cannot be read, it reports *covered*, not *stale*. An unknown
+  answer must never trigger a restart — a brief gap is cheap, a runaway loop of
+  six-hour runners is not.
+
+### What gets an email
+
+Only things a human has to act on.
+
+| Event | Response |
+|---|---|
+| Spot opens | push + email |
+| Transient WAF 403 | retry, keep polling — silent |
+| Sustained block | end the run so it restarts elsewhere — silent |
+| Nothing polling | watchdog restarts it — silent |
+| Detector reports known-open inventory as full | **email** — needs a code change |
+
+Anything the bot can fix, it fixes. The daily status email reports whatever
+coverage those recoveries cost. Three false alarms in two days is how a monitor
+becomes something you ignore, which is the exact failure this project started
+with.
+
 ## Transient failures vs. real failures
 
 Parks Canada sits behind an Azure WAF that intermittently returns 403 to cloud
@@ -196,7 +245,8 @@ Set in `.github/workflows/check-availability.yml`:
 | `ALLOWED_DAYS` | all 7 | permitted check-in days |
 | `ALERT_COOLDOWN_HOURS` | `12` | re-alert interval for a still-open window |
 | `POLL_DURATION_MINUTES` | `350` | in-process polling per run (job limit is 360) |
-| `POLL_INTERVAL_SECONDS` | `30` | seconds between checks |
+| `POLL_INTERVAL_SECONDS` | `10` | seconds between checks |
+| `MAX_POLL_INTERVAL_SECONDS` | `120` | ceiling when backing off after errors |
 | `MAX_CONSECUTIVE_FAILURES` | `10` | consecutive API failures before considering the run blind |
 | `API_RETRIES` | `8` | retries per request |
 | `API_BACKOFF_CEILING_SECONDS` | `120` | max jittered backoff between retries |
@@ -210,6 +260,7 @@ Secrets (**Settings → Secrets and variables → Actions**):
 | `EMAIL_TO_ADDRESS` | where alerts go |
 | `EMAIL_USERNAME` | your Gmail address |
 | `EMAIL_PASSWORD` | Gmail [App Password](https://myaccount.google.com/apppasswords), no spaces |
+| `NTFY_TOPIC` | *(optional)* an [ntfy.sh](https://ntfy.sh) topic for push alerts — pick something long and unguessable, since anyone who knows the topic can read it |
 
 ### Rolling to the 2027 season
 

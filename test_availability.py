@@ -19,8 +19,11 @@ from datetime import datetime, timedelta, timezone
 
 import os
 
+import unittest.mock
+
 import check_availability as bot
 import send_status
+import watchdog
 
 
 def slot(processed, availability, restriction):
@@ -268,6 +271,100 @@ class CoverageTests(unittest.TestCase):
         merged = send_status.merge_intervals(
             [(h(0), h(2)), (h(1), h(3)), (h(5), h(6))])
         self.assertEqual(merged, [[h(0), h(3)], [h(5), h(6)]])
+
+
+class PushTests(unittest.TestCase):
+    def test_no_topic_configured_is_a_no_op(self):
+        real = bot.NTFY_TOPIC
+        bot.NTFY_TOPIC = ""
+        self.addCleanup(setattr, bot, "NTFY_TOPIC", real)
+        self.assertFalse(bot.send_push("t", "b"))
+
+    def test_headers_are_latin1_safe(self):
+        """HTTP headers cannot carry arbitrary unicode; an em dash must not 500."""
+        out = bot._header_safe("Lake O'Hara \u2014 Sun Sep 20 \u2713")
+        out.encode("latin-1")  # must not raise
+        self.assertIn("Lake O'Hara", out)
+
+    def test_push_failure_does_not_raise(self):
+        """A dead push service must never stop the email going out."""
+        real = bot.NTFY_TOPIC
+        bot.NTFY_TOPIC = "x"
+        self.addCleanup(setattr, bot, "NTFY_TOPIC", real)
+        with unittest.mock.patch("urllib.request.urlopen",
+                                 side_effect=OSError("boom")):
+            self.assertFalse(bot.send_push("t", "b"))
+
+
+class BackoffTests(unittest.TestCase):
+    """At 10s polling, hammering a WAF that is already blocking earns a longer
+    block -- which costs more coverage than the latency it saves."""
+
+    def test_backoff_doubles_and_is_capped(self):
+        interval = bot.POLL_INTERVAL_SECONDS
+        seen = []
+        for _ in range(12):
+            interval = min(interval * 2, bot.MAX_POLL_INTERVAL_SECONDS)
+            seen.append(interval)
+        self.assertEqual(seen[0], bot.POLL_INTERVAL_SECONDS * 2)
+        self.assertEqual(max(seen), bot.MAX_POLL_INTERVAL_SECONDS)
+        self.assertLessEqual(seen[-1], bot.MAX_POLL_INTERVAL_SECONDS)
+
+    def test_base_interval_is_faster_than_the_cap(self):
+        self.assertLess(bot.POLL_INTERVAL_SECONDS,
+                        bot.MAX_POLL_INTERVAL_SECONDS)
+
+
+class WatchdogTests(unittest.TestCase):
+    """
+    The watchdog restarts the checker via workflow_call, so the restarted job
+    runs under the *watchdog's* run. If the probe cannot see that, it starts a
+    new six-hour poller every five minutes forever.
+    """
+
+    def _probe(self, runs, jobs_by_run):
+        import unittest.mock as mock
+
+        def fake(path):
+            if "/jobs" in path:
+                rid = int(path.split("/runs/")[1].split("/")[0])
+                return {"jobs": jobs_by_run.get(rid, [])}
+            return {"workflow_runs": runs}
+
+        with mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "a/b",
+                                          "GITHUB_TOKEN": "x"}), \
+             mock.patch.object(watchdog, "_github_json", side_effect=fake):
+            return watchdog.polling_now()
+
+    def test_sees_a_normal_polling_run(self):
+        runs = [{"id": 1, "path": ".github/workflows/check-availability.yml"}]
+        jobs = {1: [{"name": "check-campsites", "status": "in_progress"}]}
+        self.assertTrue(self._probe(runs, jobs))
+
+    def test_sees_its_own_restart_under_the_watchdog_run(self):
+        """Reusable-workflow jobs are named '<caller job> / <called job>'."""
+        runs = [{"id": 9, "path": ".github/workflows/watchdog.yml"}]
+        jobs = {9: [{"name": "probe", "status": "completed"},
+                    {"name": "restart / check-campsites",
+                     "status": "in_progress"}]}
+        self.assertTrue(self._probe(runs, jobs))
+
+    def test_reports_stale_when_nothing_is_polling(self):
+        runs = [{"id": 9, "path": ".github/workflows/watchdog.yml"}]
+        jobs = {9: [{"name": "probe", "status": "in_progress"}]}
+        self.assertFalse(self._probe(runs, jobs))
+
+    def test_completed_polling_job_does_not_count(self):
+        runs = [{"id": 1, "path": ".github/workflows/check-availability.yml"}]
+        jobs = {1: [{"name": "check-campsites", "status": "completed"}]}
+        self.assertFalse(self._probe(runs, jobs))
+
+    def test_unreadable_api_never_triggers_a_restart(self):
+        import unittest.mock as mock
+        with mock.patch.dict(os.environ, {"GITHUB_REPOSITORY": "a/b",
+                                          "GITHUB_TOKEN": "x"}), \
+             mock.patch.object(watchdog, "_github_json", return_value=None):
+            self.assertIsNone(watchdog.polling_now())
 
 
 class LiveTests(unittest.TestCase):
