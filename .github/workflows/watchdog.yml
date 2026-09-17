@@ -1,0 +1,40 @@
+name: Watchdog
+
+# Restarts the checker whenever nothing is polling, without waiting for a human
+# to notice. The bot has gone blind twice; both times the fix was "start a run",
+# and both times it needed someone to spot it first.
+#
+# This deliberately does NOT restart on failure alone. A run that ends because
+# Parks Canada's WAF blocked it has already done the right thing; what matters
+# is only whether something is polling right now.
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write # required to call the checker as a reusable workflow
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      stale: ${{ steps.probe.outputs.stale }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - id: probe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python -u watchdog.py
+
+  restart:
+    needs: probe
+    if: needs.probe.outputs.stale == 'true'
+    uses: ./.github/workflows/check-availability.yml
+    secrets: inherit

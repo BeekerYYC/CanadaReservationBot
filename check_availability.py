@@ -132,7 +132,11 @@ STATE_FILE = os.environ.get("STATE_FILE", "availability_state.json")
 ALERT_COOLDOWN_HOURS = float(os.environ.get("ALERT_COOLDOWN_HOURS", "12"))
 
 POLL_DURATION_MINUTES = float(os.environ.get("POLL_DURATION_MINUTES", "0"))
-POLL_INTERVAL_SECONDS = float(os.environ.get("POLL_INTERVAL_SECONDS", "30"))
+POLL_INTERVAL_SECONDS = float(os.environ.get("POLL_INTERVAL_SECONDS", "10"))
+MAX_POLL_INTERVAL_SECONDS = float(
+    os.environ.get("MAX_POLL_INTERVAL_SECONDS", "120"))
+NTFY_TOPIC = os.environ.get("NTFY_TOPIC", "").strip()
+NTFY_SERVER = os.environ.get("NTFY_SERVER", "https://ntfy.sh").rstrip("/")
 MAX_CONSECUTIVE_FAILURES = int(os.environ.get("MAX_CONSECUTIVE_FAILURES", "10"))
 API_RETRIES = int(os.environ.get("API_RETRIES", "8"))
 API_BACKOFF_CEILING_SECONDS = float(os.environ.get("API_BACKOFF_CEILING_SECONDS", "120"))
@@ -486,6 +490,50 @@ def build_blocked_email(reason, minutes):
     ])
 
 
+def _header_safe(text):
+    """HTTP headers must be latin-1. Drop anything that is not."""
+    return text.encode("latin-1", "replace").decode("latin-1")
+
+
+def send_push(title, body, click_url=None, priority="urgent"):
+    """
+    Fire a push notification via ntfy.
+
+    Email costs 10-60 seconds between SMTP send and the notification actually
+    buzzing. Against a window that closes in under two minutes that is a third
+    of the budget, so the push goes out first and the email follows as the
+    durable copy with the full details.
+
+    No topic configured means no push -- never a failure.
+    """
+    if not NTFY_TOPIC:
+        return False
+
+    headers = {
+        "Title": _header_safe(title),
+        "Priority": priority,
+        "Tags": "tent",
+    }
+    if click_url:
+        headers["Click"] = click_url
+
+    req = urllib.request.Request(
+        f"{NTFY_SERVER}/{NTFY_TOPIC}",
+        data=body.encode("utf-8"),
+        headers=headers,
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            resp.read()
+        print("  Push sent")
+        return True
+    except Exception as e:
+        # A failed push must never stop the email from going out.
+        print(f"  Push failed ({e}); email still sending")
+        return False
+
+
 def send_email(subject, body):
     smtp_server = os.environ.get("EMAIL_SMTP_SERVER", "smtp.gmail.com")
     smtp_port = int(os.environ.get("EMAIL_SMTP_PORT", "465"))
@@ -543,7 +591,17 @@ def check(send=True):
 
     if fresh and send:
         subject = os.environ.get("EMAIL_SUBJECT_LINE") or build_alert_subject(fresh)
-        if send_email(subject, build_alert_email(fresh)):
+        body = build_alert_email(fresh)
+        # Push first: it is the fast path, and every second is the whole game.
+        first = fresh[0]
+        send_push(
+            subject,
+            f"{first['check_in']} to {first['check_out']} "
+            f"({first['nights']} night(s)). Tap to book.",
+            click_url=build_booking_url(first["check_in"], first["check_out"],
+                                        first["nights"]),
+        )
+        if send_email(subject, body):
             record_alerts(fresh, state, now)
 
     prune_state(state, windows)
@@ -594,6 +652,13 @@ def main():
     else:
         print("Checking availability...")
 
+    # Adaptive interval. 10s is aggressive against a WAF that already 403s
+    # casual traffic, so back off on failure and recover on success: polite
+    # when Parks Canada is pushing back, fast when it is not. Hammering a
+    # blocked endpoint every 10s earns a longer block, which costs far more
+    # coverage than the latency it was meant to save.
+    interval = POLL_INTERVAL_SECONDS
+
     now = time.monotonic()
     last_canary_ok = now if status == CANARY_OK else None
     started = now
@@ -605,10 +670,15 @@ def main():
         try:
             check(send=send)
             failures = 0
+            if interval != POLL_INTERVAL_SECONDS:
+                print(f"  recovered; back to {POLL_INTERVAL_SECONDS:.0f}s polling")
+                interval = POLL_INTERVAL_SECONDS
         except ApiError as e:
             failures += 1
             last_error = str(e)
-            print(f"  API error ({failures}/{MAX_CONSECUTIVE_FAILURES}): {e}")
+            interval = min(interval * 2, MAX_POLL_INTERVAL_SECONDS)
+            print(f"  API error ({failures}/{MAX_CONSECUTIVE_FAILURES}): {e}"
+                  f" -- backing off to {interval:.0f}s")
 
         now = time.monotonic()
 
@@ -634,11 +704,13 @@ def main():
         blind_since = last_canary_ok if last_canary_ok is not None else started
         blind_minutes = (now - blind_since) / 60
         if failures >= MAX_CONSECUTIVE_FAILURES and blind_minutes >= CANARY_STALE_MINUTES:
+            # Deliberately silent. Ending the run IS the fix: the scheduler
+            # and watchdog start a fresh one, usually on a different IP. There
+            # is nothing for a human to do, and an email here trains you to
+            # ignore the ones that matter. The daily status email reports any
+            # coverage gap this caused.
             print(f"\nUnable to reach Parks Canada for {blind_minutes:.0f} "
                   f"minutes. Handing back to the scheduler for a fresh runner.")
-            if send:
-                send_email("LAKE O'HARA BOT - CANNOT REACH PARKS CANADA",
-                           build_blocked_email(last_error, blind_minutes))
             return 1
 
         if deadline is None:
@@ -646,7 +718,7 @@ def main():
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
-        time.sleep(min(POLL_INTERVAL_SECONDS, remaining))
+        time.sleep(min(interval, remaining))
 
     print("\nDone.")
     return 0
