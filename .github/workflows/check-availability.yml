@@ -17,9 +17,16 @@ name: Check Lake O'Hara Availability
 # This costs ~24 runner-hours/day, which is free on a public repo and would
 # blow through the free tier on a private one.
 
+# PAUSED. The 2026 season is over for us, so the schedule below is commented
+# out and the bot no longer polls on its own. Everything still works — uncomment
+# the two `schedule` lines to start it again, and update FIRST_NIGHT/LAST_NIGHT
+# for the new season (see "Waking it back up" in the README).
+#
+# Until then the workflow only runs when started by hand from the Actions tab.
+
 on:
-  schedule:
-    - cron: "9,29,49 * * * *"
+  # schedule:
+  #   - cron: "9,29,49 * * * *"
   workflow_dispatch:
     inputs:
       poll_duration_minutes:

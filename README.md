@@ -6,6 +6,16 @@ Backcountry Camping** (Yoho National Park) and emails you when a night opens up.
 Runs on GitHub Actions. No server, no dependencies outside the Python standard
 library.
 
+## Status: paused
+
+The 2026 season is done, so both scheduled workflows are switched off — the
+`schedule:` blocks in `check-availability.yml` and `daily-status.yml` are
+commented out. Nothing polls, nothing emails, and no Actions minutes are burned.
+
+The code is untouched and still passes its tests; both workflows can still be
+started by hand from the Actions tab. To turn the bot back on, see
+[Waking it back up](#waking-it-back-up).
+
 ## How it works
 
 ```
@@ -190,12 +200,25 @@ Secrets (**Settings → Secrets and variables → Actions**):
 | `EMAIL_USERNAME` | your Gmail address |
 | `EMAIL_PASSWORD` | Gmail [App Password](https://myaccount.google.com/apppasswords), no spaces |
 
-### Rolling to the 2027 season
+### Waking it back up
 
-Update `FIRST_NIGHT` / `LAST_NIGHT` in both workflows. Until Parks Canada opens
-the season, those dates return `restrictionReason == 1` and the bot correctly
-reports nothing — the daily status email will still confirm the detector is
-alive via the canary.
+1. Uncomment the `schedule:` block in `.github/workflows/check-availability.yml`
+   and in `.github/workflows/daily-status.yml`.
+2. Update `FIRST_NIGHT` / `LAST_NIGHT` in both workflows (and in
+   `qa-drill.yml`) to the new season's dates.
+3. Confirm the secrets are still set — Gmail app passwords get revoked when the
+   account password changes.
+4. Run the **QA Drill** workflow from the Actions tab. It sends a real, labelled
+   test email, which is the only proof the whole path still works.
+
+Until Parks Canada opens the season, those dates return `restrictionReason == 1`
+and the bot correctly reports nothing — the daily status email will still
+confirm the detector is alive via the canary.
+
+If the schedules are commented out *and* the workflows are also disabled from
+the Actions tab (**Actions → workflow → ··· → Disable workflow**), re-enable
+them there too; a commented-out cron and a disabled workflow are independent
+switches.
 
 ## Testing
 
