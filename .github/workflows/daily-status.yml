@@ -1,9 +1,12 @@
 name: Daily Status Email
 
+# PAUSED along with the availability checker — no daily status email while the
+# bot is not polling. Uncomment the `schedule` block to resume.
+
 on:
-  schedule:
-    # 14:00 UTC = 7am MST / 8am MDT
-    - cron: "0 14 * * *"
+  # schedule:
+  #   # 14:00 UTC = 7am MST / 8am MDT
+  #   - cron: "0 14 * * *"
   workflow_dispatch:
 
 permissions:
